@@ -8,12 +8,14 @@ import (
 )
 
 var (
-	Wg     sync.WaitGroup
-	Buffer = make(map[int]string)
+	Counter         int
+	Wg              sync.WaitGroup
+	Buffer          = make(map[int]string)
+	buffWriterQueue = make(chan buffWriter, 100000)
 )
 
 const (
-	PROFILING_BATCH_SIZE = 100
+	PROFILING_BATCH_SIZE = 100000
 )
 
 type Job struct {
@@ -22,6 +24,10 @@ type Job struct {
 	conv    string
 	counter *int
 	sTime   time.Time
+}
+type buffWriter struct {
+	text string
+	line int
 }
 
 type Worker struct {
@@ -34,23 +40,38 @@ func NewWorker(id int) Worker {
 }
 
 func (w *Worker) Start(jobQueue <-chan Job) {
-	var wErr error
+	var (
+		wErr error
+		text string
+	)
 	go func() {
 		for curJob := range jobQueue {
 			switch curJob.conv {
 			case "a":
-				Buffer[curJob.line], wErr = idna.ToASCII(curJob.text)
+				text, wErr = idna.ToASCII(curJob.text)
+				buffWriterQueue <- buffWriter{text: text, line: curJob.line}
 			case "u":
-				Buffer[curJob.line], wErr = idna.ToUnicode(curJob.text)
+				text, wErr = idna.ToUnicode(curJob.text)
+				buffWriterQueue <- buffWriter{text: text, line: curJob.line}
 			}
 			if wErr != nil {
 				fmt.Println(w.WorkerId, wErr.Error())
 			}
 			*curJob.counter++
 			if (*curJob.counter % PROFILING_BATCH_SIZE) == 0 {
-				fmt.Println(*curJob.counter, "converted in ", time.Since(curJob.sTime))
+				fmt.Printf("%d converted in %.6f secs\n", *curJob.counter, time.Since(curJob.sTime).Seconds())
 			}
-			Wg.Done()
 		}
 	}()
+}
+
+//write text to buffer
+func TextWriter() {
+	for {
+		select {
+		case curWriter := <-buffWriterQueue:
+			Buffer[curWriter.line] = curWriter.text
+			Wg.Done()
+		}
+	}
 }
